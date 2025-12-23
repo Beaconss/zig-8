@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @cImport({@cInclude("SDL3/SDL.h");});
 const chip8 = @import("chip8.zig");
+const Chip8 = chip8.Chip8;
 
 pub fn main() !void
 {
@@ -16,16 +17,24 @@ pub fn main() !void
         return error.FailedToCreateWindow;
     };
     defer c.SDL_DestroyWindow(window);
+    _ = c.SDL_SetWindowPosition(window, c.SDL_WINDOWPOS_CENTERED, c.SDL_WINDOWPOS_CENTERED);
 
     const renderer = c.SDL_CreateRenderer(window, 0) orelse {
         c.SDL_Log("Failed to create renderer: %s", c.SDL_GetError());
         return error.FailedToCreateRenderer;
     };
     defer c.SDL_DestroyRenderer(renderer);
+    _ = c.SDL_SetRenderLogicalPresentation(renderer, Chip8.display_x_size, Chip8.display_y_size, c.SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
 
-    const c8 = chip8.initializeChip8() orelse return;
-    _ = c8;
+    const screen_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB332, c.SDL_TEXTUREACCESS_STREAMING, Chip8.display_x_size, Chip8.display_y_size) orelse {
+        c.SDL_Log("Failed to create texture: %s", c.SDL_GetError());
+        return error.FailedToCreateTexture;
+    };
+    defer c.SDL_DestroyTexture(screen_texture);
+    _ = c.SDL_SetTextureScaleMode(screen_texture, c.SDL_SCALEMODE_NEAREST);
 
+    var c8 = chip8.initializeChip8() orelse return;
+    const target_frametime = 1000.0 / 60.0;
     var running = true;
     var event: c.SDL_Event = undefined;
     while(running)
@@ -41,7 +50,21 @@ pub fn main() !void
             }
         }
 
+        const start = c.SDL_GetPerformanceCounter();
+
+        if(c8.decodeAndExecute())
+        {
+            for(c8.display) |pixel| std.debug.print("{x} ", .{pixel});
+            _ = c.SDL_UpdateTexture(screen_texture, null, &c8.display, Chip8.display_x_size);
+        }
         _ = c.SDL_RenderClear(renderer);
+        _ = c.SDL_RenderTexture(renderer, screen_texture, null, null);
         _ = c.SDL_RenderPresent(renderer);
+
+        const end = c.SDL_GetPerformanceCounter();
+        const frametime = @as(f64, @floatFromInt(end - start)) / @as(f64, @floatFromInt(c.SDL_GetPerformanceFrequency())) * 1000.0;
+        _ = frametime;
+        _ = target_frametime;
+        //if(frametime < target_frametime) c.SDL_Delay(@intFromFloat(target_frametime - frametime));
     }
 }
