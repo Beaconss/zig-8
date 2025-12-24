@@ -1,7 +1,5 @@
-
 const std = @import("std");
-
-
+const input = @import("input.zig");
 
 pub const Chip8 = struct {
     memory: [memory_size]u8,
@@ -19,7 +17,7 @@ pub const Chip8 = struct {
     const start_address = 0x200;
     pub const display_width = 64;
     pub const display_height = 32;
-    pub fn decodeAndExecute(self: *Chip8) bool
+    pub fn decodeAndExecute(self: *Chip8) void
     {
         const ir: u16 = (@as(u16, self.memory[self.pc]) << 8) | self.memory[self.pc + 1];
         self.pc += 2;
@@ -139,16 +137,16 @@ pub const Chip8 = struct {
                     yCoord += 1;
                     if(yCoord > display_height) break;
                 }
-                return true;
+                return;
             },
             0xE000 => {
                 if(ir & 0xF == 0xE)
                 {
-                    //if(keyPressed(v[x])) self.pc += 2;
+                    if(input.keyPressed(self.v[x])) self.pc += 2;
                 }
                 else if(ir & 0xF == 1)
                 {
-                    //if(!keyPressed(v[x])) self.pc += 2;
+                    if(!input.keyPressed(self.v[x])) self.pc += 2;
                 }
             },
             0xF000 => {
@@ -163,11 +161,11 @@ pub const Chip8 = struct {
                         if(ir & 0xF0 == 0x10) self.delay_timer = self.v[x]
                         else if(ir & 0xF0 == 0x50)
                         {
-                            for(0..x + 1) |i| self.memory[self.i + i] = self.v[i];
+                            for(0..x +% 1) |i| self.memory[self.i + i] = self.v[i];
                         }
                         else if(ir & 0xF0 == 0x60)
                         {
-                            for(0..x + 1) |i| self.v[i] = self.memory[self.i + i];
+                            for(0..x +% 1) |i| self.v[i] = self.memory[self.i + i];
                         }
                     },
                     0x7 => {
@@ -180,11 +178,11 @@ pub const Chip8 = struct {
                         //self.i = fontset_address[self.v[x]];
                     },
                     0xA => {
-                        //const key = anyKeyPressed() orelse {
-                        //    self.pc -= 2;
-                        //    break;
-                        //};
-                        //self.v[x] = key;
+                        const key = input.anyKeyPressed() orelse {
+                            self.pc -= 2;
+                            return;
+                        };
+                        self.v[x] = key;
                     },
                     0xE => {
                         if(@as(u16, self.i + self.v[x]) >= memory_size) self.v[0xF] = 1;
@@ -195,7 +193,7 @@ pub const Chip8 = struct {
             },
             else => {invalidOpcode();},
         }
-        return false;
+        return;
     }
 
     fn invalidOpcode() void
@@ -204,7 +202,7 @@ pub const Chip8 = struct {
     }
 };
 
-pub fn initializeChip8() ?Chip8
+pub fn initializeInstance() ?Chip8
 {
     var chip8: Chip8 = .{
         .memory = std.mem.zeroes([Chip8.memory_size]u8),

@@ -33,7 +33,7 @@ pub fn main() !void
     defer c.SDL_DestroyTexture(screen_texture);
     _ = c.SDL_SetTextureScaleMode(screen_texture, c.SDL_SCALEMODE_NEAREST);
 
-    var c8 = chip8.initializeChip8() orelse return;
+    var c8 = chip8.initializeInstance() orelse return;
     const target_frametime = 1000.0 / 60.0;
     var running = true;
     var event: c.SDL_Event = undefined;
@@ -52,7 +52,9 @@ pub fn main() !void
 
         const start = c.SDL_GetPerformanceCounter();
 
-        if(c8.decodeAndExecute()) _ = c.SDL_UpdateTexture(screen_texture, null, &c8.display, Chip8.display_width);
+        c8.decodeAndExecute();
+
+        _ = c.SDL_UpdateTexture(screen_texture, null, &c8.display, Chip8.display_width);
         _ = c.SDL_RenderClear(renderer);
         _ = c.SDL_RenderTexture(renderer, screen_texture, null, null);
         _ = c.SDL_RenderPresent(renderer);
