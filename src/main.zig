@@ -24,9 +24,9 @@ pub fn main() !void
         return error.FailedToCreateRenderer;
     };
     defer c.SDL_DestroyRenderer(renderer);
-    _ = c.SDL_SetRenderLogicalPresentation(renderer, Chip8.display_x_size, Chip8.display_y_size, c.SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
+    _ = c.SDL_SetRenderLogicalPresentation(renderer, Chip8.display_width, Chip8.display_height, c.SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
 
-    const screen_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB332, c.SDL_TEXTUREACCESS_STREAMING, Chip8.display_x_size, Chip8.display_y_size) orelse {
+    const screen_texture = c.SDL_CreateTexture(renderer, c.SDL_PIXELFORMAT_RGB332, c.SDL_TEXTUREACCESS_STREAMING, Chip8.display_width, Chip8.display_height) orelse {
         c.SDL_Log("Failed to create texture: %s", c.SDL_GetError());
         return error.FailedToCreateTexture;
     };
@@ -52,11 +52,7 @@ pub fn main() !void
 
         const start = c.SDL_GetPerformanceCounter();
 
-        if(c8.decodeAndExecute())
-        {
-            for(c8.display) |pixel| std.debug.print("{x} ", .{pixel});
-            _ = c.SDL_UpdateTexture(screen_texture, null, &c8.display, Chip8.display_x_size);
-        }
+        if(c8.decodeAndExecute()) _ = c.SDL_UpdateTexture(screen_texture, null, &c8.display, Chip8.display_width);
         _ = c.SDL_RenderClear(renderer);
         _ = c.SDL_RenderTexture(renderer, screen_texture, null, null);
         _ = c.SDL_RenderPresent(renderer);
