@@ -11,6 +11,7 @@ pub const Chip8 = struct {
     sp: u16,
     delay_timer: u8,
     sound_timer: u8,
+    key_pressed: ?u8, //used in 0xFX0A
     beep_sound: *c.SDL_AudioStream,
     rand_engine: std.Random.Xoshiro256,
 
@@ -26,6 +27,7 @@ pub const Chip8 = struct {
             .sp = 0,
             .delay_timer = 0,
             .sound_timer = 0,
+            .key_pressed = null,
             .beep_sound = undefined,
             .rand_engine = undefined,
         };
@@ -121,26 +123,31 @@ pub const Chip8 = struct {
                         self.v[x] ^= self.v[y];
                     },
                     4 => {
-                        self.v[0xF] = @intFromBool(@as(u16, self.v[x] +% self.v[y]) > 0xFF);
+                        const old_vx = self.v[x];
                         self.v[x] +%= self.v[y];
+                        self.v[0xF] = @intFromBool((@as(u16, old_vx) +% @as(u16, self.v[y])) > 0xFF);
                     },
                     5 => {
-                        self.v[0xF] = @intFromBool(self.v[x] > self.v[y]);
-                        self.v[x] = self.v[x] -% self.v[y];
+                        const old_vx = self.v[x];
+                        self.v[x] -%= self.v[y];
+                        self.v[0xF] = @intFromBool(old_vx >= self.v[y]);
                     },
                     6 => {
                         //quirk reminder
-                        self.v[0xF] = self.v[x] & 1;
+                        const bit_out = self.v[x] & 1;
                         self.v[x] >>= 1;
+                        self.v[0xF] = bit_out;
                     },
                     7 => {
-                        self.v[0xF] = @intFromBool(self.v[y] > self.v[x]);
+                        const old_vx = self.v[x];
                         self.v[x] = self.v[y] -% self.v[x];
+                        self.v[0xF] = @intFromBool(self.v[y] >= old_vx);
                     },
                     0xE => {
                         //quirk reminder
-                        self.v[0xF] = @intFromBool((self.v[x] & 0x80) > 0);
+                        const bit_out = @intFromBool((self.v[x] & 0x80) > 0);
                         self.v[x] <<= 1;
+                        self.v[0xF] = bit_out;
                     },
                     else => {invalidOpcode();},
                 }
@@ -226,11 +233,19 @@ pub const Chip8 = struct {
                         self.i = fontset_addresses[self.v[x]];
                     },
                     0xA => {
-                        const key = anyKeyPressed() orelse {
+                        if(self.key_pressed == null)
+                        {
+                            self.key_pressed = anyKeyPressed();
+                            if(self.key_pressed == null) self.pc -= 2;
+                            return;
+                        }
+                        else if(keyPressed(self.key_pressed orelse unreachable))
+                        {
                             self.pc -= 2;
                             return;
-                        };
-                        self.v[x] = key;
+                        }
+                        self.v[x] = self.key_pressed orelse unreachable;
+                        self.key_pressed = null;
                     },
                     0xE => {
                         if(@as(u16, self.i + self.v[x]) >= memory_size) self.v[0xF] = 1;
@@ -254,7 +269,11 @@ pub const Chip8 = struct {
 
     fn fillAudio(_: ?*anyopaque, stream: ?*c.SDL_AudioStream, _: c_int, _: c_int) callconv(.c) void
     {
-        _ = c.SDL_PutAudioStreamData(stream, &audio_samples, audio_samples.len * @sizeOf(f32));
+        if(c.SDL_GetAudioStreamQueued(stream) < 12288)
+        {
+            std.debug.print("{}\n", .{c.SDL_GetAudioStreamQueued(stream)});
+            _ = c.SDL_PutAudioStreamData(stream, &audio_samples, audio_samples.len * @sizeOf(f32));
+        }
     }
 
     fn keyPressed(key: u8) bool
@@ -269,11 +288,11 @@ pub const Chip8 = struct {
     }
 
     const audio_frequency = 44100;
-    const audio_samples:[4096]f32 = blk: {
-        var samples: [4096]f32 = undefined;
+    const audio_samples:[12288]f32 = blk: {
+        var samples: [12288]f32 = undefined;
         const wave_frequency = @as(f32, @floatCast(audio_frequency)) / 440.0;
         const step_size = (2 * std.math.pi) / wave_frequency;
-        @setEvalBranchQuota(10000);
+        @setEvalBranchQuota(20000);
         var step: f32 = 0.0;
         for(0..samples.len) |i|
         {
