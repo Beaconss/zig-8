@@ -1,5 +1,5 @@
 const std = @import("std");
-const input = @import("input.zig");
+const c = @cImport({@cInclude("SDL3/SDL.h");});
 
 pub const Chip8 = struct {
     memory: [memory_size]u8,
@@ -11,12 +11,59 @@ pub const Chip8 = struct {
     sp: u16,
     delay_timer: u8,
     sound_timer: u8,
+    beep_sound: *c.SDL_AudioStream,
     rand_engine: std.Random.Xoshiro256,
 
-    const memory_size = 0x1000;
-    const start_address = 0x200;
-    pub const display_width = 64;
-    pub const display_height = 32;
+    pub fn initialize() ?Chip8
+    {
+        var chip8: Chip8 = .{
+            .memory = std.mem.zeroes([Chip8.memory_size]u8),
+            .pc = Chip8.start_address,
+            .display = std.mem.zeroes([Chip8.display_width * Chip8.display_height]u8),
+            .v = undefined,
+            .i = 0,
+            .stack = undefined,
+            .sp = 0,
+            .delay_timer = 0,
+            .sound_timer = 0,
+            .beep_sound = undefined,
+            .rand_engine = undefined,
+        };
+
+        for(0..fontset.len) |i| chip8.memory[i] = fontset[i];
+
+        const spec: c.SDL_AudioSpec = .{.format = c.SDL_AUDIO_F32, .channels = 1, .freq = 44100};
+        chip8.beep_sound = c.SDL_OpenAudioDeviceStream(c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, fillAudio, null) orelse {
+            c.SDL_Log("Failed to create audio stream, %s", c.SDL_GetError());
+            return null;
+        };
+
+        var seed: u64 = undefined;
+        std.posix.getrandom(std.mem.asBytes(&seed)) catch |err| {
+            std.log.err("Failed to initialize random engine seed: {s}", .{@errorName(err)});
+            return null;
+        };
+        chip8.rand_engine = std.Random.DefaultPrng.init(seed);
+
+        fillMem(getRomPathFromArgs() orelse return null, &chip8.memory) orelse return null;
+        return chip8;
+    }
+
+    pub fn deInitialize(self: *Chip8) void
+    {
+        c.SDL_DestroyAudioStream(self.beep_sound);
+    }
+
+    pub fn timerCycle(self: *Chip8) void
+    {
+        if(self.delay_timer > 0) self.delay_timer -= 1;
+        if(self.sound_timer > 0)
+        {
+            self.sound_timer -= 1;
+            if(self.sound_timer == 0) _ = c.SDL_PauseAudioStreamDevice(self.beep_sound);
+        }
+    }
+
     pub fn decodeAndExecute(self: *Chip8) void
     {
         const ir: u16 = (@as(u16, self.memory[self.pc]) << 8) | self.memory[self.pc + 1];
@@ -116,10 +163,12 @@ pub const Chip8 = struct {
                 var yCoord: u16 = self.v[y] % display_height;
                 for(0..n) |i|
                 {
+                    if(yCoord >= display_height) break;
                     const sprite_row = self.memory[self.i + i];
                     var xCoord = self.v[x] % display_width;
                     for(0..8) |j|
                     {
+                        if(xCoord >= display_width) break;
                         const coord = xCoord + yCoord * display_width;
                         const pixel = (sprite_row & (@as(u8, @intCast(0x80)) >> @intCast(j))) > 0;
                         if(pixel)
@@ -132,21 +181,19 @@ pub const Chip8 = struct {
                             else self.display[coord] = 0xFF;
                         }
                         xCoord += 1;
-                        if(xCoord > display_width) break;
                     }
                     yCoord += 1;
-                    if(yCoord > display_height) break;
                 }
                 return;
             },
             0xE000 => {
                 if(ir & 0xF == 0xE)
                 {
-                    if(input.keyPressed(self.v[x])) self.pc += 2;
+                    if(keyPressed(self.v[x])) self.pc += 2;
                 }
                 else if(ir & 0xF == 1)
                 {
-                    if(!input.keyPressed(self.v[x])) self.pc += 2;
+                    if(!keyPressed(self.v[x])) self.pc += 2;
                 }
             },
             0xF000 => {
@@ -173,12 +220,13 @@ pub const Chip8 = struct {
                     },
                     0x8 => {
                         self.sound_timer = self.v[x];
+                        if(self.sound_timer > 0) _ = c.SDL_ResumeAudioStreamDevice(self.beep_sound);
                     },
                     0x9 => {
-                        //self.i = fontset_address[self.v[x]];
+                        self.i = fontset_addresses[self.v[x]];
                     },
                     0xA => {
-                        const key = input.anyKeyPressed() orelse {
+                        const key = anyKeyPressed() orelse {
                             self.pc -= 2;
                             return;
                         };
@@ -196,37 +244,77 @@ pub const Chip8 = struct {
         return;
     }
 
+    pub const display_width = 64;
+    pub const display_height = 32;
+
     fn invalidOpcode() void
     {
         std.debug.print("Invalid opcode\n", .{});
     }
-};
 
-pub fn initializeInstance() ?Chip8
-{
-    var chip8: Chip8 = .{
-        .memory = std.mem.zeroes([Chip8.memory_size]u8),
-        .pc = Chip8.start_address,
-        .display = std.mem.zeroes([Chip8.display_width * Chip8.display_height]u8),
-        .v = undefined,
-        .i = 0,
-        .stack = undefined,
-        .sp = 0,
-        .delay_timer = 0,
-        .sound_timer = 0,
-        .rand_engine = undefined,
-    };
+    fn fillAudio(_: ?*anyopaque, stream: ?*c.SDL_AudioStream, _: c_int, _: c_int) callconv(.c) void
+    {
+        _ = c.SDL_PutAudioStreamData(stream, &audio_samples, audio_samples.len * @sizeOf(f32));
+    }
 
-    var seed: u64 = undefined;
-    std.posix.getrandom(std.mem.asBytes(&seed)) catch |err| {
-        std.log.err("Failed to initialize random engine seed: {s}", .{@errorName(err)});
+    fn keyPressed(key: u8) bool
+    {
+        return c.SDL_GetKeyboardState(null)[@intCast(keys[key])];
+    }
+
+    fn anyKeyPressed() ?u8
+    {
+        for(0..keys.len) |i| if(keyPressed(@intCast(i))) return @intCast(i);
         return null;
-    };
-    chip8.rand_engine = std.Random.DefaultPrng.init(seed);
+    }
 
-    fillMem(getRomPathFromArgs() orelse return null, &chip8.memory) orelse return null;
-    return chip8;
-}
+    const audio_frequency = 44100;
+    const audio_samples:[4096]f32 = blk: {
+        var samples: [4096]f32 = undefined;
+        const wave_frequency = @as(f32, @floatCast(audio_frequency)) / 440.0;
+        const step_size = (2 * std.math.pi) / wave_frequency;
+        @setEvalBranchQuota(10000);
+        var step: f32 = 0.0;
+        for(0..samples.len) |i|
+        {
+            step += step_size;
+            samples[i] = @sin(step) * 0.8;
+        }
+        break :blk samples;
+    };
+ 
+    const memory_size = 0x1000;
+    const start_address = 0x200;
+    const fontset = [_]u8 {
+        0xF0, 0x90, 0x90, 0x90, 0xF0, //0
+        0x20, 0x60, 0x20, 0x20, 0x70, //1
+        0xF0, 0x10, 0xF0, 0x80, 0xF0, //2
+        0xF0, 0x10, 0xF0, 0x10, 0xF0, //3
+        0x90, 0x90, 0xF0, 0x10, 0x10, //4
+        0xF0, 0x80, 0xF0, 0x10, 0xF0, //5
+        0xF0, 0x80, 0xF0, 0x90, 0xF0, //6
+        0xF0, 0x10, 0x20, 0x40, 0x40, //7
+        0xF0, 0x90, 0xF0, 0x90, 0xF0, //8
+        0xF0, 0x90, 0xF0, 0x10, 0xF0, //9
+        0xF0, 0x90, 0xF0, 0x90, 0x90, //A
+        0xE0, 0x90, 0xE0, 0x90, 0xE0, //B
+        0xF0, 0x80, 0x80, 0x80, 0xF0, //C
+        0xE0, 0x90, 0x90, 0x90, 0xE0, //D
+        0xF0, 0x80, 0xF0, 0x80, 0xF0, //E
+        0xF0, 0x80, 0xF0, 0x80, 0x80, //F
+    };
+    const fontset_addresses = [_]u8 {
+        0x0, 0x5, 0xA, 0xF, 0x14, 0x19, 0x1E, 0x23,
+        0x28, 0x2D, 0x32, 0x37, 0x3C, 0x41, 0x46, 0x4B,
+    };
+
+    const keys = [_]c_int  {
+        c.SDL_SCANCODE_X, c.SDL_SCANCODE_1, c.SDL_SCANCODE_2, c.SDL_SCANCODE_3,
+        c.SDL_SCANCODE_Q, c.SDL_SCANCODE_W, c.SDL_SCANCODE_E, c.SDL_SCANCODE_A,
+        c.SDL_SCANCODE_S, c.SDL_SCANCODE_D, c.SDL_SCANCODE_Z, c.SDL_SCANCODE_C,
+        c.SDL_SCANCODE_4, c.SDL_SCANCODE_R, c.SDL_SCANCODE_F, c.SDL_SCANCODE_V
+    };
+};
 
 fn getRomPathFromArgs() ?[]const u8
 {
@@ -247,7 +335,7 @@ fn getRomPathFromArgs() ?[]const u8
     return rom_path;
 }
 
-fn fillMem(rom_path: []const u8, memory: *[Chip8.memory_size]u8) ?void
+fn fillMem(rom_path: []const u8, memory: []u8) ?void
 {
     const file = std.fs.cwd().openFile(rom_path, .{}) catch |err| {
         std.log.err("Failed to open file: {s}", .{@errorName(err)});
@@ -260,7 +348,7 @@ fn fillMem(rom_path: []const u8, memory: *[Chip8.memory_size]u8) ?void
     for(Chip8.start_address..Chip8.memory_size) |i|
     {
         const byte = file_reader.interface.peekByte() catch break;
-        memory.*[i] = byte;
+        memory[i] = byte;
         file_reader.interface.toss(1);
     }
     return;
