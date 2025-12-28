@@ -13,7 +13,7 @@ pub const Chip8 = struct {
     sound_timer: u8,
     key_pressed: ?u8, //used in 0xFX0A
     beep_sound: *c.SDL_AudioStream,
-    rand_engine: std.Random.Xoshiro256,
+    rand_engine: std.Random,
 
     pub fn initialize() ?Chip8
     {
@@ -21,39 +21,59 @@ pub const Chip8 = struct {
             .memory = std.mem.zeroes([Chip8.memory_size]u8),
             .pc = Chip8.start_address,
             .display = std.mem.zeroes([Chip8.display_width * Chip8.display_height]u8),
-            .v = undefined,
+            .v = std.mem.zeroes([16]u8),
             .i = 0,
-            .stack = undefined,
+            .stack = std.mem.zeroes([16]u16),
             .sp = 0,
             .delay_timer = 0,
             .sound_timer = 0,
             .key_pressed = null,
-            .beep_sound = undefined,
-            .rand_engine = undefined,
+            .beep_sound = blk: {
+                const spec: c.SDL_AudioSpec = .{.format = c.SDL_AUDIO_F32, .channels = 1, .freq = 44100};
+                const stream = c.SDL_OpenAudioDeviceStream(c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, fillAudio, null) orelse {
+                    c.SDL_Log("Failed to create audio stream, %s", c.SDL_GetError());
+                    return null;
+                };
+                break: blk stream;
+            },
+            .rand_engine = blk: {
+                var seed: u64 = undefined;
+                std.posix.getrandom(std.mem.asBytes(&seed)) catch |err| {
+                    std.log.err("Failed to initialize random engine seed: {s}", .{@errorName(err)});
+                    return null;
+                };
+                var xoshiro = std.Random.DefaultPrng.init(seed);
+                const random = xoshiro.random();
+                break: blk random;
+            },
         };
 
         for(0..fontset.len) |i| chip8.memory[i] = fontset[i];
-
-        const spec: c.SDL_AudioSpec = .{.format = c.SDL_AUDIO_F32, .channels = 1, .freq = 44100};
-        chip8.beep_sound = c.SDL_OpenAudioDeviceStream(c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, fillAudio, null) orelse {
-            c.SDL_Log("Failed to create audio stream, %s", c.SDL_GetError());
-            return null;
-        };
-
-        var seed: u64 = undefined;
-        std.posix.getrandom(std.mem.asBytes(&seed)) catch |err| {
-            std.log.err("Failed to initialize random engine seed: {s}", .{@errorName(err)});
-            return null;
-        };
-        chip8.rand_engine = std.Random.DefaultPrng.init(seed);
-
-        fillMem(getRomPathFromArgs() orelse return null, &chip8.memory) orelse return null;
         return chip8;
     }
 
     pub fn deInitialize(self: *Chip8) void
     {
         c.SDL_DestroyAudioStream(self.beep_sound);
+    }
+
+    pub fn loadRom(self: *Chip8, rom_path: []const u8) ?void
+    {
+        const file = std.fs.cwd().openFile(rom_path, .{}) catch |err| {
+            std.log.err("Failed to open file: {s}", .{@errorName(err)});
+            return null;
+        };
+        defer file.close();
+
+        var buffer: [Chip8.memory_size]u8 = undefined;
+        var file_reader = file.reader(&buffer);
+        for(Chip8.start_address..Chip8.memory_size) |i|
+        {
+            const byte = file_reader.interface.peekByte() catch break;
+            self.memory[i] = byte;
+            file_reader.interface.toss(1);
+        }
+        return;
     }
 
     pub fn timerCycle(self: *Chip8) void
@@ -160,10 +180,10 @@ pub const Chip8 = struct {
             },
             0xB000 => {
                 //quirk reminder
-                self.pc = nnn + self.v[x];
+                self.pc = nnn + self.v[0];
             },
             0xC000 => {
-                self.v[x] = self.rand_engine.random().int(u8);
+                self.v[x] = self.rand_engine.int(u8);
             },
             0xD000 => {
                 self.v[0xF] = 0;
@@ -196,43 +216,20 @@ pub const Chip8 = struct {
             0xE000 => {
                 if(ir & 0xF == 0xE)
                 {
-                    if(keyPressed(self.v[x])) self.pc += 2;
+                    if(keyPressed(self.v[x] & 0xF)) self.pc += 2;
                 }
                 else if(ir & 0xF == 1)
                 {
-                    if(!keyPressed(self.v[x])) self.pc += 2;
+                    if(!keyPressed(self.v[x] & 0xF)) self.pc += 2;
                 }
             },
             0xF000 => {
-                switch(ir & 0xF)
+                switch(ir & 0xFF)
                 {
-                    0x3 => {
-                        self.memory[self.i] = self.v[x] / 100;
-                        self.memory[self.i + 1] = (self.v[x] % 100) / 10;
-                        self.memory[self.i + 2] = self.v[x] % 10;
-                    },
-                    0x5 => {
-                        if(ir & 0xF0 == 0x10) self.delay_timer = self.v[x]
-                        else if(ir & 0xF0 == 0x50)
-                        {
-                            for(0..x +% 1) |i| self.memory[self.i + i] = self.v[i];
-                        }
-                        else if(ir & 0xF0 == 0x60)
-                        {
-                            for(0..x +% 1) |i| self.v[i] = self.memory[self.i + i];
-                        }
-                    },
-                    0x7 => {
+                    0x07 => {
                         self.v[x] = self.delay_timer;
                     },
-                    0x8 => {
-                        self.sound_timer = self.v[x];
-                        if(self.sound_timer > 0) _ = c.SDL_ResumeAudioStreamDevice(self.beep_sound);
-                    },
-                    0x9 => {
-                        self.i = fontset_addresses[self.v[x]];
-                    },
-                    0xA => {
+                    0x0A => {
                         if(self.key_pressed == null)
                         {
                             self.key_pressed = anyKeyPressed();
@@ -247,9 +244,32 @@ pub const Chip8 = struct {
                         self.v[x] = self.key_pressed orelse unreachable;
                         self.key_pressed = null;
                     },
-                    0xE => {
-                        if(@as(u16, self.i + self.v[x]) >= memory_size) self.v[0xF] = 1;
+                    0x15 => {
+                        self.delay_timer = self.v[x];
+                    },
+                    0x18 => {
+                        self.sound_timer = self.v[x];
+                        if(self.sound_timer > 0) _ = c.SDL_ResumeAudioStreamDevice(self.beep_sound)
+                        else _ = c.SDL_PauseAudioStreamDevice(self.beep_sound);
+                    },
+                    0x1E => {
                         self.i +%= self.v[x];
+                    },
+                    0x29 => {
+                        self.i = fontset_addresses[self.v[x] & 0xF];
+                    },
+                    0x33 => {
+                        self.memory[self.i] = self.v[x] / 100;
+                        self.memory[self.i + 1] = (self.v[x] % 100) / 10;
+                        self.memory[self.i + 2] = self.v[x] % 10;
+                    },
+                    0x55 => {
+                        const upto: u8 = x;
+                        for(0..upto + 1) |i| self.memory[self.i + i] = self.v[i];
+                    },
+                    0x65 => {
+                        const upto: u8 = x;
+                        for(0..upto + 1) |i| self.v[i] = self.memory[self.i + i];
                     },
                     else => {invalidOpcode();},
                 }
@@ -334,41 +354,3 @@ pub const Chip8 = struct {
         c.SDL_SCANCODE_4, c.SDL_SCANCODE_R, c.SDL_SCANCODE_F, c.SDL_SCANCODE_V
     };
 };
-
-fn getRomPathFromArgs() ?[]const u8
-{
-    var buffer: [1024]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    const allocator = fba.allocator(); 
-
-    var args = std.process.argsWithAllocator(allocator) catch |err| {
-        std.log.err("Failed to read arg: {s}", .{@errorName(err)});
-        return null;
-    };
-    defer args.deinit();
-    _ = args.next();
-    const rom_path = args.next() orelse {
-        std.debug.print("Put rom path as second cli argument\n", .{});
-        return null;
-    };
-    return rom_path;
-}
-
-fn fillMem(rom_path: []const u8, memory: []u8) ?void
-{
-    const file = std.fs.cwd().openFile(rom_path, .{}) catch |err| {
-        std.log.err("Failed to open file: {s}", .{@errorName(err)});
-        return null;
-    };
-    defer file.close();
-
-    var buffer: [Chip8.memory_size]u8 = undefined;
-    var file_reader = file.reader(&buffer);
-    for(Chip8.start_address..Chip8.memory_size) |i|
-    {
-        const byte = file_reader.interface.peekByte() catch break;
-        memory[i] = byte;
-        file_reader.interface.toss(1);
-    }
-    return;
-}
