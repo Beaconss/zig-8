@@ -5,7 +5,7 @@ pub const Chip8 = struct {
     memory: [memory_size]u8,
     pc: u16,
     display: [display_width * display_height]u8,
-    v: [16]u8,
+    v: [16]u8, //registers
     i: u16,
     stack: [16]u16,
     sp: u16,
@@ -13,7 +13,7 @@ pub const Chip8 = struct {
     sound_timer: u8,
     key_pressed: ?u8, //used in 0xFX0A
     beep_sound: *c.SDL_AudioStream,
-    rand_engine: std.Random,
+    rand_engine: std.Random.Xoshiro256,
 
     pub fn initialize() ?Chip8
     {
@@ -42,9 +42,8 @@ pub const Chip8 = struct {
                     std.log.err("Failed to initialize random engine seed: {s}", .{@errorName(err)});
                     return null;
                 };
-                var xoshiro = std.Random.DefaultPrng.init(seed);
-                const random = xoshiro.random();
-                break: blk random;
+                const prng= std.Random.DefaultPrng.init(seed);
+                break: blk prng;
             },
         };
 
@@ -135,12 +134,15 @@ pub const Chip8 = struct {
                     },
                     1 => {
                         self.v[x] |= self.v[y];
+                        self.v[0xF] = 0;
                     },
                     2 => {
                         self.v[x] &= self.v[y];
+                        self.v[0xF] = 0;
                     },
                     3 => {
                         self.v[x] ^= self.v[y];
+                        self.v[0xF] = 0;
                     },
                     4 => {
                         const old_vx = self.v[x];
@@ -154,6 +156,7 @@ pub const Chip8 = struct {
                     },
                     6 => {
                         //quirk reminder
+                        self.v[x] = self.v[y];
                         const bit_out = self.v[x] & 1;
                         self.v[x] >>= 1;
                         self.v[0xF] = bit_out;
@@ -165,6 +168,7 @@ pub const Chip8 = struct {
                     },
                     0xE => {
                         //quirk reminder
+                        self.v[x] = self.v[y];
                         const bit_out = @intFromBool((self.v[x] & 0x80) > 0);
                         self.v[x] <<= 1;
                         self.v[0xF] = bit_out;
@@ -183,7 +187,7 @@ pub const Chip8 = struct {
                 self.pc = nnn + self.v[0];
             },
             0xC000 => {
-                self.v[x] = self.rand_engine.int(u8);
+                self.v[x] = self.rand_engine.random().int(u8) & nn;
             },
             0xD000 => {
                 self.v[0xF] = 0;
@@ -265,11 +269,19 @@ pub const Chip8 = struct {
                     },
                     0x55 => {
                         const upto: u8 = x;
-                        for(0..upto + 1) |i| self.memory[self.i + i] = self.v[i];
+                        for(0..upto + 1) |i|
+                        {
+                            self.memory[self.i] = self.v[i];
+                            self.i += 1;
+                        }
                     },
                     0x65 => {
                         const upto: u8 = x;
-                        for(0..upto + 1) |i| self.v[i] = self.memory[self.i + i];
+                        for(0..upto + 1) |i|
+                        {
+                            self.v[i] = self.memory[self.i];
+                            self.i += 1;
+                        }
                     },
                     else => {invalidOpcode();},
                 }
@@ -287,13 +299,20 @@ pub const Chip8 = struct {
         std.debug.print("Invalid opcode\n", .{});
     }
 
-    fn fillAudio(_: ?*anyopaque, stream: ?*c.SDL_AudioStream, _: c_int, _: c_int) callconv(.c) void
+    fn fillAudio(_: ?*anyopaque, stream: ?*c.SDL_AudioStream, needed_amount: c_int, _: c_int) callconv(.c) void
     {
-        if(c.SDL_GetAudioStreamQueued(stream) < 12288)
+        const oscillator = struct {
+            var step: f32 = 0.0;
+            var samples: [4096]f32 = undefined;
+            const step_size = (2 * std.math.pi) / (44100.0 / 440.0);
+            const volume = 0.6;
+        };
+        for(0..@intCast(needed_amount)) |i|
         {
-            std.debug.print("{}\n", .{c.SDL_GetAudioStreamQueued(stream)});
-            _ = c.SDL_PutAudioStreamData(stream, &audio_samples, audio_samples.len * @sizeOf(f32));
+            oscillator.samples[i] = @sin(oscillator.step) * oscillator.volume;
+            oscillator.step += oscillator.step_size;
         }
+        _ = c.SDL_PutAudioStreamData(stream, &oscillator.samples, needed_amount * 4);
     }
 
     fn keyPressed(key: u8) bool
@@ -308,19 +327,6 @@ pub const Chip8 = struct {
     }
 
     const audio_frequency = 44100;
-    const audio_samples:[12288]f32 = blk: {
-        var samples: [12288]f32 = undefined;
-        const wave_frequency = @as(f32, @floatCast(audio_frequency)) / 440.0;
-        const step_size = (2 * std.math.pi) / wave_frequency;
-        @setEvalBranchQuota(20000);
-        var step: f32 = 0.0;
-        for(0..samples.len) |i|
-        {
-            step += step_size;
-            samples[i] = @sin(step) * 0.8;
-        }
-        break :blk samples;
-    };
  
     const memory_size = 0x1000;
     const start_address = 0x200;
