@@ -50,6 +50,9 @@ pub fn main() !void
                 c.SDL_EVENT_KEY_DOWN => {
                     if(event.key.scancode == c.SDL_SCANCODE_SPACE) fps_limiter = !fps_limiter;
                 },
+                c.SDL_EVENT_DROP_FILE => {
+                    _ = c8.loadRom(event.drop.data);
+                },
                 c.SDL_EVENT_QUIT => {
                     running = false;
                 },
@@ -76,12 +79,11 @@ pub fn main() !void
             const end = c.SDL_GetPerformanceCounter();
             const frametime = @as(f64, @floatFromInt(end - start)) / @as(f64, @floatFromInt(c.SDL_GetPerformanceFrequency())) * 1000000000.0;
             if(frametime < target_frametime) c.SDL_DelayPrecise(@intFromFloat(target_frametime - frametime));
-
         }
     }
 }
 
-fn getRomPathFromArgs() ?[]const u8
+fn getRomPathFromArgs() ?[*c]const u8
 {
     var buffer: [1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);

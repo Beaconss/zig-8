@@ -18,12 +18,12 @@ pub const Chip8 = struct {
     pub fn initialize() ?Chip8
     {
         var chip8: Chip8 = .{
-            .memory = std.mem.zeroes([Chip8.memory_size]u8),
+            .memory = undefined,
             .pc = Chip8.start_address,
-            .display = std.mem.zeroes([Chip8.display_width * Chip8.display_height]u8),
-            .v = std.mem.zeroes([16]u8),
+            .display = undefined,
+            .v = undefined,
             .i = 0,
-            .stack = std.mem.zeroes([16]u16),
+            .stack = undefined,
             .sp = 0,
             .delay_timer = 0,
             .sound_timer = 0,
@@ -46,6 +46,10 @@ pub const Chip8 = struct {
                 break: blk prng;
             },
         };
+        @memset(&chip8.memory, 0);
+        @memset(&chip8.display, 0);
+        @memset(&chip8.v, 0);
+        @memset(&chip8.stack, 0);
 
         for(0..fontset.len) |i| chip8.memory[i] = fontset[i];
         return chip8;
@@ -56,9 +60,10 @@ pub const Chip8 = struct {
         c.SDL_DestroyAudioStream(self.beep_sound);
     }
 
-    pub fn loadRom(self: *Chip8, rom_path: []const u8) ?void
+    pub fn loadRom(self: *Chip8, rom_path: [*c]const u8) ?void
     {
-        const file = std.fs.cwd().openFile(rom_path, .{}) catch |err| {
+        self.reset();
+        const file = std.fs.cwd().openFileZ(rom_path, .{}) catch |err| {
             std.log.err("Failed to open file: {s}", .{@errorName(err)});
             return null;
         };
@@ -293,6 +298,20 @@ pub const Chip8 = struct {
 
     pub const display_width = 64;
     pub const display_height = 32;
+
+    fn reset(self: *Chip8) void
+    {
+        for(Chip8.start_address..Chip8.memory_size) |i| self.memory[i] = 0;
+        self.pc = Chip8.start_address;
+        @memset(&self.display, 0);
+        @memset(&self.v, 0);
+        self.i = 0;
+        @memset(&self.stack, 0);
+        self.sp = 0;
+        self.delay_timer = 0;
+        self.sound_timer = 0;
+        self.key_pressed = null;
+    }
 
     fn invalidOpcode() void
     {
