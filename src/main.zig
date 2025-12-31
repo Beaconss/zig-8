@@ -35,7 +35,8 @@ pub fn main() !void
 
     var c8 = Chip8.initialize() orelse return;
     defer c8.deInitialize();
-    c8.loadRom(getRomPathFromArgs() orelse return) orelse return;
+    const cli_rom_path = getRomPathFromArgs();
+    if(cli_rom_path != null) c8.loadRom(cli_rom_path.?) catch {};
 
     const target_frametime = 1000000000.0 / 60.005;
     var running = true;
@@ -51,7 +52,7 @@ pub fn main() !void
                     if(event.key.scancode == c.SDL_SCANCODE_SPACE) fps_limiter = !fps_limiter;
                 },
                 c.SDL_EVENT_DROP_FILE => {
-                    _ = c8.loadRom(event.drop.data);
+                    c8.loadRom(event.drop.data) catch {};
                 },
                 c.SDL_EVENT_QUIT => {
                     running = false;

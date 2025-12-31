@@ -60,12 +60,12 @@ pub const Chip8 = struct {
         c.SDL_DestroyAudioStream(self.beep_sound);
     }
 
-    pub fn loadRom(self: *Chip8, rom_path: [*c]const u8) ?void
+    pub fn loadRom(self: *Chip8, rom_path: [*:0]const u8) !void
     {
         self.reset();
         const file = std.fs.cwd().openFileZ(rom_path, .{}) catch |err| {
             std.log.err("Failed to open file: {s}", .{@errorName(err)});
-            return null;
+            return err;
         };
         defer file.close();
 
